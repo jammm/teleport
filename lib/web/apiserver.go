@@ -1787,7 +1787,7 @@ func (h *Handler) siteSessionEventsGet(w http.ResponseWriter, r *http.Request, p
 	if !services.IsValidNamespace(namespace) {
 		return nil, trace.BadParameter("invalid namespace %q", namespace)
 	}
-	e, err := clt.GetSessionEvents(namespace, *sessionID, afterN)
+	e, err := clt.GetSessionEvents(namespace, *sessionID, afterN, true)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

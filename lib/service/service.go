@@ -46,6 +46,8 @@ import (
 	"github.com/gravitational/teleport/lib/backend/etcdbk"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
+	"github.com/gravitational/teleport/lib/events/dynamoevents"
+	"github.com/gravitational/teleport/lib/events/s3sessions"
 	"github.com/gravitational/teleport/lib/limiter"
 	"github.com/gravitational/teleport/lib/multiplexer"
 	"github.com/gravitational/teleport/lib/reversetunnel"
@@ -440,6 +442,25 @@ func (process *TeleportProcess) getLocalAuth() *auth.AuthServer {
 	return process.localAuth
 }
 
+// adminCreds returns admin UID and GID settings based on the OS
+func adminCreds() (*int, *int, error) {
+	if runtime.GOOS != teleport.LinuxOS {
+		return nil, nil, nil
+	}
+	// if the user member of adm linux group,
+	// make audit log folder readable by admins
+	isAdmin, err := utils.IsGroupMember(teleport.LinuxAdminGID)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	if !isAdmin {
+		return nil, nil, nil
+	}
+	uid := os.Getuid()
+	gid := teleport.LinuxAdminGID
+	return &uid, &gid, nil
+}
+
 // initAuthService can be called to initialize auth server service
 func (process *TeleportProcess) initAuthService() error {
 	var (
@@ -477,24 +498,32 @@ func (process *TeleportProcess) initAuthService() error {
 			log.Warn(warningMessage)
 		}
 
+		handler, err := s3sessions.NewHandler(s3sessions.Config{
+			Bucket: "evisthebestceo",
+			Region: "us-west-2",
+		})
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+		dynamolog, err := dynamoevents.New(dynamoevents.Config{
+			Tablename: "teleevents",
+			Region:    "us-west-2",
+		})
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
 		auditConfig := events.AuditLogConfig{
 			DataDir:        filepath.Join(cfg.DataDir, "log"),
 			RecordSessions: recordSessions,
 			ServerID:       cfg.HostUUID,
+			UploadHandler:  handler,
+			ExternalLog:    dynamolog,
 		}
-		if runtime.GOOS == teleport.LinuxOS {
-			// if the user member of adm linux group,
-			// make audit log folder readable by admins
-			isAdmin, err := utils.IsGroupMember(teleport.LinuxAdminGID)
-			if err != nil {
-				return trace.Wrap(err)
-			}
-			if isAdmin {
-				uid := os.Getuid()
-				gid := teleport.LinuxAdminGID
-				auditConfig.UID = &uid
-				auditConfig.GID = &gid
-			}
+		auditConfig.UID, auditConfig.GID, err = adminCreds()
+		if err != nil {
+			return trace.Wrap(err)
 		}
 		process.auditLog, err = events.NewAuditLog(auditConfig)
 		if err != nil {
@@ -864,6 +893,14 @@ func (process *TeleportProcess) initSSH() error {
 			return trace.Wrap(err)
 		}
 
+		// init uploader service for recording SSH node, if proxy is not
+		// enabled on this node, because proxy stars uploader service as well
+		if !cfg.Proxy.Enabled {
+			if err := process.initUploaderService(conn.Client); err != nil {
+				return trace.Wrap(err)
+			}
+		}
+
 		log.Infof("Service is starting on %v %v.", cfg.SSH.Addr.Addr, process.Config.CachePolicy)
 		go s.Serve(listener)
 
@@ -890,6 +927,7 @@ func (process *TeleportProcess) initSSH() error {
 		}
 		log.Infof("Exited.")
 	})
+
 	return nil
 }
 
@@ -950,6 +988,70 @@ func (process *TeleportProcess) RegisterWithAuthServer(token string, role telepo
 			authClient.Close()
 		}
 	})
+}
+
+func (process *TeleportProcess) initUploaderService(auditLog events.IAuditLog) error {
+	// create folder for uploads
+	uid, gid, err := adminCreds()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	log := logrus.WithFields(logrus.Fields{
+		trace.Component: teleport.ComponentAuditLog,
+	})
+
+	// prepare dirs for uploader
+	path := []string{process.Config.DataDir, "log", "upload", events.SessionLogsDir, defaults.Namespace}
+	for i := 1; i < len(path); i++ {
+		dir := filepath.Join(path[:i+1]...)
+		log.Infof("Creating directory %v.", dir)
+		err := os.Mkdir(dir, 0755)
+		err = trace.ConvertSystemError(err)
+		if err != nil {
+			if !trace.IsAlreadyExists(err) {
+				return trace.Wrap(err)
+			}
+		}
+		if uid != nil && gid != nil {
+			log.Infof("Setting directory %v owner to %#x:%#x.", dir, *uid, *gid)
+			err := os.Chown(dir, *uid, *gid)
+			if err != nil {
+				return trace.ConvertSystemError(err)
+			}
+		}
+	}
+
+	handler, err := s3sessions.NewHandler(s3sessions.Config{
+		Bucket: "evisthebestceo",
+		Region: "us-west-2",
+	})
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	uploader, err := events.NewUploader(events.UploaderConfig{
+		DataDir:   filepath.Join(process.Config.DataDir, "log"),
+		Namespace: defaults.Namespace,
+		ServerID:  "upload",
+		Handler:   handler,
+		AuditLog:  auditLog,
+	})
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	process.RegisterFunc("uploader.service", func() error {
+		err := uploader.Serve()
+		if err != nil {
+			log.Errorf("Uploader server exited with error: %v.", err)
+		}
+		return nil
+	})
+
+	process.onExit("uploader.shutdown", func(payload interface{}) {
+		log.Infof("Shutting down.")
+		warnOnErr(uploader.Stop())
+		log.Infof("Exited.")
+	})
+	return nil
 }
 
 // initDiagnosticService starts diagnostic service currently serving healthz
@@ -1352,6 +1454,10 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 		}
 		log.Infof("Exited.")
 	})
+	if err := process.initUploaderService(conn.Client); err != nil {
+		return trace.Wrap(err)
+	}
+
 	return nil
 }
 

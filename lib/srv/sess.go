@@ -344,18 +344,31 @@ type sessionRecorder struct {
 
 func newSessionRecorder(alog events.IAuditLog, ctx *ServerContext, sid rsession.ID) (*sessionRecorder, error) {
 	var auditLog events.IAuditLog
-	var err error
 	if alog == nil {
 		auditLog = &events.DiscardAuditLog{}
 	} else {
-		auditLog, err = state.NewCachingAuditLog(state.CachingAuditLogConfig{
-			Namespace: ctx.srv.GetNamespace(),
-			SessionID: string(sid),
-			Server:    alog,
+		// move this logic to service, does not belong here,
+		// should pass constructor
+		forwarder, err := events.NewForwardingSessionLog(events.ForwardingSessionLogConfig{
+			SessionID:      sid,
+			ServerID:       "upload",
+			DataDir:        "/var/lib/teleport/log",
+			RecordSessions: true,
+			Namespace:      ctx.srv.GetNamespace(),
+			ForwardTo:      alog,
 		})
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
+		cacher, err := state.NewCachingAuditLog(state.CachingAuditLogConfig{
+			Namespace: ctx.srv.GetNamespace(),
+			SessionID: string(sid),
+			Server:    forwarder,
+		})
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		auditLog = cacher
 	}
 	sr := &sessionRecorder{
 		log: logrus.WithFields(logrus.Fields{

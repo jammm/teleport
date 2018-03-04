@@ -209,6 +209,13 @@ const (
 
 	// Off means mode is off
 	Off = "off"
+
+	// SchemeS3 is S3 file scheme, means upload or download to S3 like object
+	// storage
+	SchemeS3 = "s3"
+
+	// SchemeFile is a local disk file storage
+	SchemeFile = "file"
 )
 
 // Component generates "component:subcomponent1:subcomponent2" strings used
