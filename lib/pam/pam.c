@@ -98,9 +98,7 @@ int converse(int n, const struct pam_message **msg, struct pam_response **resp, 
 // with the user.
 struct pam_conv *make_pam_conv(int n)
 {
-    // The pam_conv struct allocated below does not need a free call. The
-    // pam_end(3) function will call _pam_drop (which will call free and set the
-    // value to NULL) on all items in the PAM handle.
+    // This memory allocation will be released in the Close function.
     struct pam_conv *conv = (struct pam_conv *)malloc(sizeof(struct pam_conv));
 
     // The converse is the actual callback function below.

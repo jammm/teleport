@@ -184,6 +184,8 @@ func (p *PAM) Close() error {
 		return p.codeToError(retval)
 	}
 
+	C.free(unsafe.Pointer(p.conv))
+
 	C.dlclose(p.pamHandle)
 
 	C.free(unsafe.Pointer(p.service_name))
