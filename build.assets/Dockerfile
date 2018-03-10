@@ -27,6 +27,7 @@ RUN apt-get install -q -y \
          make \
          git \
          libc6-dev \
+         libpam-dev \
          gcc \
          tar \
          gzip \
@@ -34,8 +35,8 @@ RUN apt-get install -q -y \
          python-pip \
          libyaml-dev \
          python-dev \
-         nginx \         
-         zip; \         
+         nginx \
+         zip; \
       apt-get -y autoclean; apt-get -y clean
 
 # Install mkDocs
