@@ -1107,6 +1107,20 @@ func (a *AuditTestSuite) TestCloseOutstanding(c *check.C) {
 	c.Assert(alog.loggers.Len(), check.Equals, 0)
 }
 
+// TestForwardAndUpload tests forwarding server and upload
+// server case
+func (a *AuditTestSuite) TestForwardAndUpload(c *check.C) {
+	alog, err := NewAuditLog(AuditLogConfig{
+		DataDir:        a.dataDir,
+		RecordSessions: true,
+		Clock:          fakeClock,
+		ServerID:       "outstanding",
+	})
+	c.Assert(err, check.IsNil)
+	uploadDir := c.MkDir()
+	forwarder := NewForwarder()
+}
+
 func marshal(f EventFields) []byte {
 	data, err := json.Marshal(f)
 	if err != nil {

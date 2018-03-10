@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Gravitational, Inc.
+Copyright 2018 Gravitational, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,9 +37,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// UploaderHandler is a function supplied by the user, it will upload
+// UploadHandler is a function supplied by the user, it will upload
 // the file
-type UploaderHandler interface {
+type UploadHandler interface {
 	// Upload uploads session tarball and returns URL with uploaded file
 	// in case of success.
 	Upload(ctx context.Context, sessionID session.ID, readCloser io.Reader) (string, error)
@@ -47,7 +47,7 @@ type UploaderHandler interface {
 	Download(ctx context.Context, sessionID session.ID, writer io.WriterAt) error
 }
 
-// UploaderConfig
+// UploaderConfig sets up configuration for uploader service
 type UploaderConfig struct {
 	// DataDir is data directory for session events files
 	DataDir string
@@ -63,8 +63,8 @@ type UploaderConfig struct {
 	ScanPeriod time.Duration
 	// ConcurrentUploads sets up how many parallel uploads to schedule
 	ConcurrentUploads int
-	// Handler is uploader handler supplied by user
-	Handler UploaderHandler
+	// Handler is upload handler supplied by user
+	Handler UploadHandler
 	// AuditLog is audit log client
 	AuditLog IAuditLog
 }

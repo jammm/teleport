@@ -25,6 +25,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/session"
@@ -135,8 +136,10 @@ const (
 // New returns new instance of DynamoDB backend.
 // It's an implementation of backend API's NewFunc
 func New(cfg Config) (*Log, error) {
-	l := log.WithFields(log.Fields{trace.Component: "sasha"})
-	l.Info("Initializing DynamoDB Event backend.")
+	l := log.WithFields(log.Fields{
+		trace.Component: teleport.Component(teleport.ComponentDynamoDB),
+	})
+	l.Info("Initializing event backend.")
 
 	if err := cfg.CheckAndSetDefaults(); err != nil {
 		return nil, trace.Wrap(err)
@@ -363,7 +366,6 @@ func (l *Log) GetSessionEvents(namespace string, sid session.ID, after int, inlc
 // show up sorted by date (newest first)
 func (l *Log) SearchEvents(fromUTC, toUTC time.Time, filter string, limit int) ([]events.EventFields, error) {
 	g := l.WithFields(log.Fields{"From": fromUTC, "To": toUTC, "Filter": filter, "Limit": limit})
-	g.Infof("Start.")
 	filterVals, err := url.ParseQuery(filter)
 	if err != nil {
 		return nil, trace.BadParameter("missing parameter query")
@@ -389,12 +391,11 @@ func (l *Log) SearchEvents(fromUTC, toUTC time.Time, filter string, limit int) (
 		IndexName:                 aws.String(indexTimeSearch),
 	}
 	start := time.Now()
-	g.Infof("Query Start.")
 	out, err := l.svc.Query(&input)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	g.Infof("Query End in %v, returned %v items.", time.Now().Sub(start), len(out.Items))
+	g.WithFields(log.Fields{"duration": time.Now().Sub(start), "items": len(out.Items)}).Debugf("Query completed.")
 	var total int
 	for _, item := range out.Items {
 		var e event
@@ -408,9 +409,7 @@ func (l *Log) SearchEvents(fromUTC, toUTC time.Time, filter string, limit int) (
 		}
 		var accepted bool
 		for i := range eventFilter {
-			g.Infof("Filter: %v, type:%v", eventFilter[i], fields.GetString(events.EventType))
 			if fields.GetString(events.EventType) == eventFilter[i] {
-				g.Infof("Filter: %v, type:%v. Accepted", eventFilter[i], fields.GetString(events.EventType))
 				accepted = true
 				break
 			}
@@ -424,7 +423,6 @@ func (l *Log) SearchEvents(fromUTC, toUTC time.Time, filter string, limit int) (
 		}
 	}
 	sort.Sort(events.ByTimeAndIndex(values))
-	g.Infof("Returned.")
 	return values, nil
 }
 

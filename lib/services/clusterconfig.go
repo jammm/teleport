@@ -113,6 +113,12 @@ type AuditConfig struct {
 	AuditTableName string `json:"audit_table_name,omitempty"`
 }
 
+// ShouldUploadSessions returns whether audit config
+// instructs server to upload sessions
+func (a AuditConfig) ShouldUploadSessions() bool {
+	return a.AuditSessionsURI != ""
+}
+
 // AuditConfigFromObject returns audit config from interface object
 func AuditConfigFromObject(in interface{}) (*AuditConfig, error) {
 	var cfg AuditConfig

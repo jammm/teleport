@@ -10,16 +10,23 @@ import (
 	"github.com/gravitational/trace"
 )
 
-type ForwardingSessionLogConfig struct {
-	SessionID      session.ID
-	ServerID       string
-	DataDir        string
+// ForwarderConfig forwards session log events
+// to the auth server, and writes the session playback to disk
+type ForwarderConfig struct {
+	// SessionID is a session id to write
+	SessionID session.ID
+	// ServerID is a serverID data directory
+	ServerID string
+	// DataDir is a data directory
+	DataDir string
+	// RecordSessions is a sessions recording setting
 	RecordSessions bool
 	Namespace      string
 	ForwardTo      IAuditLog
 }
 
-func (s *ForwardingSessionLogConfig) CheckAndSetDefaults() error {
+// CheckAndSetDefaults checks and sets default values
+func (s *ForwarderConfig) CheckAndSetDefaults() error {
 	if s.ForwardTo == nil {
 		return trace.BadParameter("missing parameter bucket")
 	}
@@ -29,7 +36,8 @@ func (s *ForwardingSessionLogConfig) CheckAndSetDefaults() error {
 	return nil
 }
 
-func NewForwardingSessionLog(cfg ForwardingSessionLogConfig) (*ForwardingSessionLog, error) {
+// NewForwarder returns a new instance of session forwarder
+func NewForwarder(cfg ForwarderConfig) (*Forwarder, error) {
 	if err := cfg.CheckAndSetDefaults(); err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -43,30 +51,31 @@ func NewForwardingSessionLog(cfg ForwardingSessionLogConfig) (*ForwardingSession
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return &ForwardingSessionLog{
-		ForwardingSessionLogConfig: cfg,
-		sessionLogger:              diskLogger,
+	return &Forwarder{
+		ForwarderConfig: cfg,
+		sessionLogger:   diskLogger,
 	}, nil
 }
 
-// ForwardingSessionLog logs session on local disk and forwards all events
-type ForwardingSessionLog struct {
-	ForwardingSessionLogConfig
+// ForwarderConfig forwards session log events
+// to the auth server, and writes the session playback to disk
+type Forwarder struct {
+	ForwarderConfig
 	sessionLogger *DiskSessionLogger
 }
 
 // Closer releases connection and resources associated with log if any
-func (l *ForwardingSessionLog) Close() error {
+func (l *Forwarder) Close() error {
 	return l.sessionLogger.Finalize()
 }
 
 // EmitAuditEvent emits audit event
-func (l *ForwardingSessionLog) EmitAuditEvent(eventType string, fields EventFields) error {
+func (l *Forwarder) EmitAuditEvent(eventType string, fields EventFields) error {
 	return l.ForwardTo.EmitAuditEvent(eventType, fields)
 }
 
 // PostSessionSlice sends chunks of recorded session to the event log
-func (l *ForwardingSessionLog) PostSessionSlice(slice SessionSlice) error {
+func (l *Forwarder) PostSessionSlice(slice SessionSlice) error {
 	err := l.sessionLogger.PostSessionSlice(slice)
 	if err != nil {
 		return trace.Wrap(err)
@@ -95,7 +104,7 @@ func (l *ForwardingSessionLog) PostSessionSlice(slice SessionSlice) error {
 
 // PostSessionChunk returns a writer which SSH nodes use to submit
 // their live sessions into the session log
-func (l *ForwardingSessionLog) PostSessionChunk(namespace string, sid session.ID, reader io.Reader) error {
+func (l *Forwarder) PostSessionChunk(namespace string, sid session.ID, reader io.Reader) error {
 	return l.ForwardTo.PostSessionChunk(namespace, sid, reader)
 }
 
@@ -104,7 +113,7 @@ func (l *ForwardingSessionLog) PostSessionChunk(namespace string, sid session.ID
 // beginning) up to maxBytes bytes.
 //
 // If maxBytes > MaxChunkBytes, it gets rounded down to MaxChunkBytes
-func (l *ForwardingSessionLog) GetSessionChunk(namespace string, sid session.ID, offsetBytes, maxBytes int) ([]byte, error) {
+func (l *Forwarder) GetSessionChunk(namespace string, sid session.ID, offsetBytes, maxBytes int) ([]byte, error) {
 	return l.ForwardTo.GetSessionChunk(namespace, sid, offsetBytes, maxBytes)
 }
 
@@ -115,7 +124,7 @@ func (l *ForwardingSessionLog) GetSessionChunk(namespace string, sid session.ID,
 //
 // This function is usually used in conjunction with GetSessionReader to
 // replay recorded session streams.
-func (l *ForwardingSessionLog) GetSessionEvents(namespace string, sid session.ID, after int, includePrintEvents bool) ([]EventFields, error) {
+func (l *Forwarder) GetSessionEvents(namespace string, sid session.ID, after int, includePrintEvents bool) ([]EventFields, error) {
 	return l.ForwardTo.GetSessionEvents(namespace, sid, after, includePrintEvents)
 }
 
@@ -127,18 +136,18 @@ func (l *ForwardingSessionLog) GetSessionEvents(namespace string, sid session.ID
 //
 // The only mandatory requirement is a date range (UTC). Results must always
 // show up sorted by date (newest first)
-func (l *ForwardingSessionLog) SearchEvents(fromUTC, toUTC time.Time, query string, limit int) ([]EventFields, error) {
+func (l *Forwarder) SearchEvents(fromUTC, toUTC time.Time, query string, limit int) ([]EventFields, error) {
 	return l.ForwardTo.SearchEvents(fromUTC, toUTC, query, limit)
 }
 
 // SearchSessionEvents returns session related events only. This is used to
 // find completed session.
-func (l *ForwardingSessionLog) SearchSessionEvents(fromUTC time.Time, toUTC time.Time, limit int) ([]EventFields, error) {
+func (l *Forwarder) SearchSessionEvents(fromUTC time.Time, toUTC time.Time, limit int) ([]EventFields, error) {
 	return l.ForwardTo.SearchSessionEvents(fromUTC, toUTC, limit)
 }
 
 // WaitForDelivery waits for resources to be released and outstanding requests to
 // complete after calling Close method
-func (l *ForwardingSessionLog) WaitForDelivery(ctx context.Context) error {
+func (l *Forwarder) WaitForDelivery(ctx context.Context) error {
 	return l.ForwardTo.WaitForDelivery(ctx)
 }

@@ -347,23 +347,30 @@ func newSessionRecorder(alog events.IAuditLog, ctx *ServerContext, sid rsession.
 	if alog == nil {
 		auditLog = &events.DiscardAuditLog{}
 	} else {
-		// move this logic to service, does not belong here,
-		// should pass constructor
-		forwarder, err := events.NewForwardingSessionLog(events.ForwardingSessionLogConfig{
-			SessionID:      sid,
-			ServerID:       "upload",
-			DataDir:        "/var/lib/teleport/log",
-			RecordSessions: true,
-			Namespace:      ctx.srv.GetNamespace(),
-			ForwardTo:      alog,
-		})
+		clusterConfig, err := ctx.srv.GetAccessPoint().GetClusterConfig()
 		if err != nil {
 			return nil, trace.Wrap(err)
+		}
+		if clusterConfig.GetAuditConfig().ShouldUploadSessions() {
+			// in case of sessions upload, write sessions to local
+			// disk, and forward only audit events to the remote audit logger
+			forwarder, err := events.NewForwarder(events.ForwarderConfig{
+				SessionID:      sid,
+				ServerID:       "upload",
+				DataDir:        ctx.srv.GetDataDir(),
+				RecordSessions: clusterConfig.GetSessionRecording() != services.RecordOff,
+				Namespace:      ctx.srv.GetNamespace(),
+				ForwardTo:      alog,
+			})
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+			alog = forwarder
 		}
 		cacher, err := state.NewCachingAuditLog(state.CachingAuditLogConfig{
 			Namespace: ctx.srv.GetNamespace(),
 			SessionID: string(sid),
-			Server:    forwarder,
+			Server:    alog,
 		})
 		if err != nil {
 			return nil, trace.Wrap(err)

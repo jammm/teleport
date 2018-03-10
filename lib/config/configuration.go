@@ -411,6 +411,7 @@ func ApplyFileConfig(fc *FileConfig, cfg *service.Config) error {
 	if err != nil {
 		return trace.Wrap(err)
 	}
+	auditConfig.Type = fc.Storage.Type
 
 	// build cluster config from session recording and host key checking preferences
 	cfg.Auth.ClusterConfig, err = services.NewClusterConfig(services.ClusterConfigSpecV3{

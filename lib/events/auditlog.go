@@ -28,7 +28,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -131,9 +130,9 @@ type AuditLogConfig struct {
 	// deleted
 	PlaybackRecycleTTL time.Duration
 
-	// UploadHandler is a pluggable external uploader handler,
+	// UploadHandler is a pluggable external upload handler,
 	// used to fetch sessions from external sources
-	UploadHandler UploaderHandler
+	UploadHandler UploadHandler
 
 	// ExternalLog is a pluggable external log service
 	ExternalLog IAuditLog
@@ -444,7 +443,6 @@ func readIndexEntries(file *os.File, authServer string) (events []indexEntry, ch
 }
 
 func (l *AuditLog) downloadSession(namespace string, sid session.ID) error {
-	debug.PrintStack()
 	tarballPath := filepath.Join(l.playbackDir, string(sid)+".tar")
 
 	_, err := os.Stat(tarballPath)
