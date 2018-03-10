@@ -38,6 +38,7 @@ import (
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/limiter"
+	"github.com/gravitational/teleport/lib/pam"
 	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
@@ -694,6 +695,43 @@ func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, identityContext
 
 	ctx.Debugf("Opening direct-tcpip channel from %v to %v", srcAddr, dstAddr)
 
+	var pamContext *pam.PAM
+
+	// If this session is running on a Teleport node, then run PAM specific code.
+	if s.Component() == teleport.ComponentNode {
+		// Create a PAM context, note that here any output gets discarded. This is
+		// to prevent things like the MOTD from printing when running an exec
+		// command.
+		pamContext, err = pam.New(&pam.Config{
+			ServiceName: "sshd",
+			Username:    ctx.Identity.Login,
+			Stdin:       ch,
+			Stderr:      ioutil.Discard,
+			Stdout:      ioutil.Discard,
+		})
+		if err != nil {
+			ch.Stderr().Write([]byte(err.Error()))
+			return
+		}
+
+		// Check that the *nix account is valid. Here valid means the account is not
+		// expired and does not have any access restrictions. Note: This function
+		// does not perform any authentication!
+		err = pamContext.AccountManagement()
+		if err != nil {
+			ch.Stderr().Write([]byte(err.Error()))
+			return
+		}
+
+		// Open a user session. Opening a session can entail anything from printing
+		// the MOTD, mounting a home directory, updating auth.log.
+		err = pamContext.OpenSession()
+		if err != nil {
+			ch.Stderr().Write([]byte(err.Error()))
+			return
+		}
+	}
+
 	conn, err := net.Dial("tcp", dstAddr)
 	if err != nil {
 		ctx.Infof("Failed to connect to: %v: %v", dstAddr, err)
@@ -723,6 +761,21 @@ func (s *Server) handleDirectTCPIPRequest(sconn *ssh.ServerConn, identityContext
 		conn.Close()
 	}()
 	wg.Wait()
+
+	// If this is Teleport node, run any PAM cleanup that needs to be run.
+	if s.Component() == teleport.ComponentNode {
+		err := pamContext.CloseSession()
+		if err != nil {
+			ctx.Errorf("Unable to close PAM session: %v\n", err)
+			return
+		}
+
+		err = pamContext.Close()
+		if err != nil {
+			ctx.Errorf("Unable to close PAM context: %v\n", err)
+			return
+		}
+	}
 }
 
 // handleTerminalResize is called by the web proxy via its SSH connection.
@@ -741,11 +794,11 @@ func (s *Server) handleTerminalResize(sconn *ssh.ServerConn, ch ssh.Channel) {
 
 // handleSessionRequests handles out of band session requests once the session channel has been created
 // this function's loop handles all the "exec", "subsystem" and "shell" requests.
-func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, identityContext srv.IdentityContext, ch ssh.Channel, in <-chan *ssh.Request) {
+func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, identityContext srv.IdentityContext, channel ssh.Channel, inCh <-chan *ssh.Request) {
 	// ctx holds the connection context and keeps track of the associated resources
 	ctx := srv.NewServerContext(s, sconn, identityContext)
 	ctx.IsTestStub = s.isTestStub
-	ctx.AddCloser(ch)
+	ctx.AddCloser(channel)
 	defer ctx.Close()
 
 	for {
@@ -757,8 +810,8 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, identityContext sr
 				ctx.Errorf("[SSH] %v", errorMessage)
 
 				// write the error to channel and close it
-				ch.Stderr().Write([]byte(errorMessage))
-				_, err := ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{C: teleport.RemoteCommandFailure}))
+				channel.Stderr().Write([]byte(errorMessage))
+				_, err := channel.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{C: teleport.RemoteCommandFailure}))
 				if err != nil {
 					ctx.Errorf("[SSH] failed to send exit status %v", errorMessage)
 				}
@@ -771,14 +824,14 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, identityContext sr
 			// want us to close session and the channel
 			ctx.Debugf("[SSH] close session request: %v", creq.Err)
 			return
-		case req := <-in:
+		case req := <-inCh:
 			if req == nil {
 				// this will happen when the client closes/drops the connection
 				ctx.Debugf("[SSH] client %v disconnected", sconn.RemoteAddr())
 				return
 			}
-			if err := s.dispatch(ch, req, ctx); err != nil {
-				s.replyError(ch, req, err)
+			if err := s.dispatch(channel, req, ctx); err != nil {
+				s.replyError(channel, req, err)
 				return
 			}
 			if req.WantReply {
@@ -788,7 +841,7 @@ func (s *Server) handleSessionRequests(sconn *ssh.ServerConn, identityContext sr
 			ctx.Debugf("[SSH] ctx.result = %v", result)
 			// this means that exec process has finished and delivered the execution result,
 			// we send it back and close the session
-			_, err := ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{C: uint32(result.Code)}))
+			_, err := channel.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{C: uint32(result.Code)}))
 			if err != nil {
 				ctx.Infof("[SSH] %v failed to send exit status: %v", result.Command, err)
 			}

@@ -1,4 +1,4 @@
-// +build pam
+// +build !debug
 
 package pam
 
@@ -24,6 +24,7 @@ import "C"
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"sync"
@@ -44,6 +45,8 @@ var handlers map[int]handler = make(map[int]handler)
 func writeCallback(index C.int, stream C.int, s *C.char) {
 	handlerMu.Lock()
 	defer handlerMu.Unlock()
+
+	fmt.Printf("--> writeCallback: index=%v, stream=%v\n", index, stream)
 
 	handle, ok := handlers[int(index)]
 	if !ok {
@@ -237,9 +240,10 @@ func (p *PAM) writeStream(stream int, s string) (int, error) {
 		writer = p.stderr
 	}
 
-	n, err := writer.Write([]byte(s))
+	fmt.Printf("--> Trying to write %v bytes to %+v\n", len(s), writer)
+	n, err := writer.Write(bytes.Replace([]byte(s), []byte("\n"), []byte("\r\n"), -1))
 	if err != nil {
-		return 0, err
+		return n, err
 	}
 
 	return n, nil

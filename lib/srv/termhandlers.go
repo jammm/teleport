@@ -18,7 +18,10 @@ package srv
 
 import (
 	"golang.org/x/crypto/ssh"
+	"io/ioutil"
 
+	"github.com/gravitational/teleport"
+	"github.com/gravitational/teleport/lib/pam"
 	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/trace"
@@ -45,6 +48,40 @@ func (t *TermHandlers) HandleExec(ch ssh.Channel, req *ssh.Request, ctx *ServerC
 		return t.SessionRegistry.OpenSession(ch, req, ctx)
 	}
 
+	var pamContext *pam.PAM
+
+	// If this session is running on a Teleport node, then run PAM specific code.
+	if ctx.srv.Component() == teleport.ComponentNode {
+		// Create a PAM context, note that here any output gets discarded. This is
+		// to prevent things like the MOTD from printing when running an exec
+		// command.
+		pamContext, err = pam.New(&pam.Config{
+			ServiceName: "sshd",
+			Username:    ctx.Identity.Login,
+			Stdin:       ch,
+			Stderr:      ioutil.Discard,
+			Stdout:      ioutil.Discard,
+		})
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+		// Check that the *nix account is valid. Here valid means the account is not
+		// expired and does not have any access restrictions. Note: This function
+		// does not perform any authentication!
+		err = pamContext.AccountManagement()
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+		// Open a user session. Opening a session can entail anything from printing
+		// the MOTD, mounting a home directory, updating auth.log.
+		err = pamContext.OpenSession()
+		if err != nil {
+			return trace.Wrap(err)
+		}
+	}
+
 	// otherwise, regular execution
 	result, err := execRequest.Start(ch)
 	if err != nil {
@@ -65,6 +102,21 @@ func (t *TermHandlers) HandleExec(ch ssh.Channel, req *ssh.Request, ctx *ServerC
 		}
 		if result != nil {
 			ctx.SendExecResult(*result)
+		}
+
+		// If this is Teleport node, run any PAM cleanup that needs to be run.
+		if ctx.srv.Component() == teleport.ComponentNode {
+			err := pamContext.CloseSession()
+			if err != nil {
+				ctx.Errorf("Unable to close PAM session: %v\n", err)
+				return
+			}
+
+			err = pamContext.Close()
+			if err != nil {
+				ctx.Errorf("Unable to close PAM context: %v\n", err)
+				return
+			}
 		}
 	}()
 

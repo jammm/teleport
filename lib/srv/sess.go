@@ -28,6 +28,7 @@ import (
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
+	"github.com/gravitational/teleport/lib/pam"
 	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/sshutils"
@@ -567,6 +568,47 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 	// create a new "party" (connected client)
 	p := newParty(s, ch, ctx)
 
+	// get the audit log from the server and create a session recorder. this will
+	// be a discard audit log if the proxy is in recording mode and a teleport
+	// node so we don't create double recordings.
+	auditLog := s.registry.srv.GetAuditLog()
+	s.recorder, err = newSessionRecorder(auditLog, ctx, s.id)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	s.writer.addWriter("session-recorder", s.recorder, true)
+
+	var pamContext *pam.PAM
+
+	// If this session is running on a Teleport node, then run PAM specific code.
+	if ctx.srv.Component() == teleport.ComponentNode {
+		pamContext, err = pam.New(&pam.Config{
+			ServiceName: "sshd",
+			Username:    ctx.Identity.Login,
+			Stdin:       ch,
+			Stderr:      s.writer,
+			Stdout:      s.writer,
+		})
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+		// Check that the *nix account is valid. Here valid means the account is not
+		// expired and does not have any access restrictions. Note: This function
+		// does not perform any authentication!
+		err = pamContext.AccountManagement()
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+		// Open a user session. Opening a session can entail anything from printing
+		// the MOTD, mounting a home directory, updating auth.log.
+		err = pamContext.OpenSession()
+		if err != nil {
+			return trace.Wrap(err)
+		}
+	}
+
 	// allocate a terminal or take the one previously allocated via a
 	// seaprate "allocate TTY" SSH request
 	if ctx.GetTerm() != nil {
@@ -588,16 +630,6 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 	}
 
 	params := s.term.GetTerminalParams()
-
-	// get the audit log from the server and create a session recorder. this will
-	// be a discard audit log if the proxy is in recording mode and a teleport
-	// node so we don't create double recordings.
-	auditLog := s.registry.srv.GetAuditLog()
-	s.recorder, err = newSessionRecorder(auditLog, ctx, s.id)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	s.writer.addWriter("session-recorder", s.recorder, true)
 
 	// emit "new session created" event:
 	s.recorder.alog.EmitAuditEvent(events.SessionStartEvent, events.EventFields{
@@ -660,6 +692,21 @@ func (s *session) start(ch ssh.Channel, ctx *ServerContext) error {
 			// no error? this means the command exited cleanly: no need
 			// for this session to "linger" after this.
 			s.SetLingerTTL(time.Duration(0))
+		}
+
+		// If this is Teleport node, run any PAM cleanup that needs to be run.
+		if ctx.srv.Component() == teleport.ComponentNode {
+			err := pamContext.CloseSession()
+			if err != nil {
+				s.log.Errorf("Unable to close PAM session: %v\n", err)
+				return
+			}
+
+			err = pamContext.Close()
+			if err != nil {
+				s.log.Errorf("Unable to close PAM context: %v\n", err)
+				return
+			}
 		}
 	}()
 

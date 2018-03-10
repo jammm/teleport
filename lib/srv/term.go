@@ -26,7 +26,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/gravitational/teleport"
-	"github.com/gravitational/teleport/lib/pam"
 	"github.com/gravitational/teleport/lib/services"
 	rsession "github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/sshutils"
@@ -119,8 +118,6 @@ type terminal struct {
 
 	termType string
 	params   rsession.TerminalParams
-
-	pamContext *pam.PAM
 }
 
 // NewLocalTerminal creates and returns a local PTY.
@@ -131,26 +128,13 @@ func newLocalTerminal(ctx *ServerContext) (*terminal, error) {
 		return nil, err
 	}
 
-	// Create handle to a PAM context.
-	pamContext, err := pam.New(&pam.Config{
-		ServiceName: "sshd",
-		Username:    ctx.Identity.Login,
-		Stdin:       pty,
-		Stderr:      pty,
-		Stdout:      pty,
-	})
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
 	return &terminal{
 		log: log.WithFields(log.Fields{
 			trace.Component: teleport.ComponentLocalTerm,
 		}),
-		ctx:        ctx,
-		pty:        pty,
-		tty:        tty,
-		pamContext: pamContext,
+		ctx: ctx,
+		pty: pty,
+		tty: tty,
 	}, nil
 }
 
@@ -163,16 +147,6 @@ func (t *terminal) AddParty(delta int) {
 // Run will run the terminal.
 func (t *terminal) Run() error {
 	defer t.closeTTY()
-
-	// open a pam session
-	// TODO(russjones): We should check if PAM support has been compiled into
-	//   Teleport and if this system has PAM support. Maybe even allow disabling
-	//   PAM via a flag like OpenSSH.
-	err := t.pamContext.OpenSession()
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	t.log.Debugf("PAM session for %v opened.", t.ctx.SessionID())
 
 	cmd, err := prepareInteractiveCommand(t.ctx)
 	if err != nil {
@@ -241,22 +215,7 @@ func (t *terminal) TTY() *os.File {
 
 // Close will free resources associated with the terminal.
 func (t *terminal) Close() error {
-	// TODO(russjones): We should check if PAM support has been compiled into
-	//   Teleport and if this system has PAM support. Maybe even allow disabling
-	//   PAM via a flag like OpenSSH.
-
-	// close the pam session
-	err := t.pamContext.CloseSession()
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	t.log.Debugf("PAM session for %v closed.", t.ctx.SessionID())
-
-	// close the pam context and transaction
-	err = t.pamContext.Close()
-	if err != nil {
-		return trace.Wrap(err)
-	}
+	var err error
 
 	// note, pty is closed in the copying goroutine,
 	// not here to avoid data races

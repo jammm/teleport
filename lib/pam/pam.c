@@ -1,4 +1,4 @@
-// +build pam
+// +build !debug
 
 #include "_cgo_export.h"
 #include <stdio.h>
@@ -69,6 +69,7 @@ int converse(int n, const struct pam_message **msg, struct pam_response **resp, 
             }
             break;
         case PAM_TEXT_INFO:
+            printf("--> writing PAM_TEXT_INFO\n");
             // Write message to stdout.
             writeCallback((uintptr_t)data, STDOUT_FILENO, (char *)(msg[i]->msg));
             if (strlen(msg[i]->msg) > 0 && msg[i]->msg[strlen(msg[i]->msg) - 1] != '\n') {

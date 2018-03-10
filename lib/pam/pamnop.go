@@ -1,6 +1,10 @@
-// +build !pam
+// +build debug
 
 package pam
+
+import (
+	"fmt"
+)
 
 type PAM struct {
 }
@@ -18,6 +22,7 @@ func (p *PAM) AccountManagement() error {
 }
 
 func (p *PAM) OpenSession() error {
+	fmt.Printf("--> OpenSession Fake\n")
 	return nil
 }
 
