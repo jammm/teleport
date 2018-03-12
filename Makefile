@@ -47,15 +47,12 @@ endif
 #            This is the default build target for convenience of working on
 #            a web UI.
 .PHONY: all
-all: $(VERSRC)
-	go install $(PAMFLAGS) $(BUILDFLAGS) ./lib/...
-	$(MAKE) -s -j 3 $(BINARIES)
+all: $(VERSRC) $(BINARIES)
 
 $(BUILDDIR)/tctl: $(LIBS) $(TELEPORTSRC) $(TELEPORTVENDOR)
 	go build -o $(BUILDDIR)/tctl -i $(BUILDFLAGS) ./tool/tctl
 
 $(BUILDDIR)/teleport: $(LIBS) $(TELEPORTSRC) $(TELEPORTVENDOR)
-	@echo go build $(PAMFLAGS) -o $(BUILDDIR)/teleport -i $(BUILDFLAGS) ./tool/teleport
 	go build $(PAMFLAGS) -o $(BUILDDIR)/teleport -i $(BUILDFLAGS) ./tool/teleport
 
 $(BUILDDIR)/tsh: $(LIBS) $(TELEPORTSRC) $(TELEPORTVENDOR)

@@ -1,4 +1,4 @@
-// +build !debug
+// +build pam,cgo
 
 #include "_cgo_export.h"
 #include <stdio.h>
@@ -10,7 +10,8 @@
 // library_name returns the name of the library to load at runtime.
 char *library_name()
 {
-    return "libpam.so";
+    //return "libpam.so";
+    return "libpam.dylib";
 }
 
 // converse is called by PAM to interact with the user. Interaction means

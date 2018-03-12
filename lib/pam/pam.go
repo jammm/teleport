@@ -1,4 +1,4 @@
-// +build !debug
+// +build pam,cgo
 
 package pam
 
