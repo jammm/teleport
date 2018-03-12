@@ -24,3 +24,29 @@ type Config struct {
 	// report errors to the user.
 	Stderr io.Writer
 }
+
+type PAM interface {
+	Close() error
+	AccountManagement() error
+	OpenSession() error
+	CloseSession() error
+}
+
+type nopContext struct {
+}
+
+func (p *nopContext) Close() error {
+	return nil
+}
+
+func (p *nopContext) AccountManagement() error {
+	return nil
+}
+
+func (p *nopContext) OpenSession() error {
+	return nil
+}
+
+func (p *nopContext) CloseSession() error {
+	return nil
+}

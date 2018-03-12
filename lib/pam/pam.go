@@ -30,7 +30,16 @@ import (
 	"sync"
 	"syscall"
 	"unsafe"
+
+	"github.com/gravitational/teleport"
+	"github.com/gravitational/trace"
+
+	"github.com/sirupsen/logrus"
 )
+
+var log = logrus.WithFields(logrus.Fields{
+	trace.Component: teleport.ComponentPAM,
+})
 
 type handler interface {
 	writeStream(int, string) (int, error)
@@ -45,8 +54,6 @@ var handlers map[int]handler = make(map[int]handler)
 func writeCallback(index C.int, stream C.int, s *C.char) {
 	handlerMu.Lock()
 	defer handlerMu.Unlock()
-
-	fmt.Printf("--> writeCallback: index=%v, stream=%v\n", index, stream)
 
 	handle, ok := handlers[int(index)]
 	if !ok {
@@ -98,7 +105,7 @@ func readCallback(index C.int, e C.int) *C.char {
 	return C.CString(s)
 }
 
-type PAM struct {
+type context struct {
 	// pamh is a handle to the PAM transaction state.
 	pamh *C.pam_handle_t
 
@@ -131,12 +138,13 @@ type PAM struct {
 	pamHandle unsafe.Pointer
 }
 
-func New(config *Config) (*PAM, error) {
+// New creates a new PAM context for PAM transactions.
+func New(config *Config) (PAM, error) {
 	if config == nil {
 		return nil, fmt.Errorf("PAM configuration is required.")
 	}
 
-	p := &PAM{
+	p := &context{
 		pamh:   nil,
 		stdin:  config.Stdin,
 		stdout: config.Stdout,
@@ -147,8 +155,8 @@ func New(config *Config) (*PAM, error) {
 	// obtained, this means the library is not on the system, return a nop PAM.
 	p.pamHandle = C.dlopen(C.library_name(), C.RTLD_NOW)
 	if p.pamHandle == nil {
-		// TODO(russjones): Don't return an error here, return a nop library.
-		return nil, fmt.Errorf("unable to obtain handle to PAM library")
+		log.Debugf("Unable to find PAM library at runtime, using no-op PAM context.")
+		return &nopContext{}, nil
 	}
 
 	// Both config.ServiceName and config.Username convert between Go strings to
@@ -157,10 +165,11 @@ func New(config *Config) (*PAM, error) {
 	p.service_name = C.CString(config.ServiceName)
 	p.user = C.CString(config.Username)
 
-	// C code does not know *PAM exists. To ensure the conversation function can
-	// get messages to the right *PAM, a handle registry at the package level is
-	// created (handlers). Each instance of *PAM has it's own handle which is
-	// used to communicate between C and a instance of *PAM.
+	// C code does not know that this PAM context exists. To ensure the
+	// conversation function can get messages to the right context, a handle
+	// registry at the package level is created (handlers). Each instance of the
+	// PAM context has it's own handle which is used to communicate between C
+	// and a instance of a PAM context.
 	handlerMu.Lock()
 	defer handlerMu.Unlock()
 
@@ -181,7 +190,7 @@ func New(config *Config) (*PAM, error) {
 	return p, nil
 }
 
-func (p *PAM) Close() error {
+func (p *context) Close() error {
 	retval := C._pam_end(p.pamHandle, p.pamh, p.retval)
 	if retval != C.PAM_SUCCESS {
 		return p.codeToError(retval)
@@ -197,7 +206,7 @@ func (p *PAM) Close() error {
 	return nil
 }
 
-func (p *PAM) Authenticate() error {
+func (p *context) Authenticate() error {
 	retval := C._pam_authenticate(p.pamHandle, p.pamh, 0)
 	if retval != C.PAM_SUCCESS {
 		return p.codeToError(retval)
@@ -206,7 +215,7 @@ func (p *PAM) Authenticate() error {
 	return nil
 }
 
-func (p *PAM) AccountManagement() error {
+func (p *context) AccountManagement() error {
 	retval := C._pam_acct_mgmt(p.pamHandle, p.pamh, 0)
 	if retval != C.PAM_SUCCESS {
 		return p.codeToError(retval)
@@ -215,7 +224,7 @@ func (p *PAM) AccountManagement() error {
 	return nil
 }
 
-func (p *PAM) OpenSession() error {
+func (p *context) OpenSession() error {
 	fmt.Printf("--> OpenSession Real\n")
 	p.retval = C._pam_open_session(p.pamHandle, p.pamh, 0)
 	if p.retval != C.PAM_SUCCESS {
@@ -225,7 +234,7 @@ func (p *PAM) OpenSession() error {
 	return nil
 }
 
-func (p *PAM) CloseSession() error {
+func (p *context) CloseSession() error {
 	p.retval = C._pam_close_session(p.pamHandle, p.pamh, 0)
 	if p.retval != C.PAM_SUCCESS {
 		return p.codeToError(p.retval)
@@ -234,13 +243,12 @@ func (p *PAM) CloseSession() error {
 	return nil
 }
 
-func (p *PAM) writeStream(stream int, s string) (int, error) {
+func (p *context) writeStream(stream int, s string) (int, error) {
 	writer := p.stdout
 	if stream == syscall.Stderr {
 		writer = p.stderr
 	}
 
-	fmt.Printf("--> Trying to write %v bytes to %+v\n", len(s), writer)
 	n, err := writer.Write(bytes.Replace([]byte(s), []byte("\n"), []byte("\r\n"), -1))
 	if err != nil {
 		return n, err
@@ -249,7 +257,7 @@ func (p *PAM) writeStream(stream int, s string) (int, error) {
 	return n, nil
 }
 
-func (p *PAM) readStream(echo bool) (string, error) {
+func (p *context) readStream(echo bool) (string, error) {
 	reader := bufio.NewReader(p.stdin)
 	text, err := reader.ReadString('\n')
 	if err != nil {
@@ -259,9 +267,14 @@ func (p *PAM) readStream(echo bool) (string, error) {
 	return text, nil
 }
 
-func (p *PAM) codeToError(returnValue C.int) error {
+func (p *context) codeToError(returnValue C.int) error {
 	// Error strings are not allocated on the heap, so memory does not need
 	// released.
 	err := C._pam_strerror(p.pamHandle, p.pamh, returnValue)
 	return fmt.Errorf("%v", C.GoString(err))
+}
+
+// HasPAM returns if the binary was build with support for PAM compiled in or not.
+func HasPAM() bool {
+	return true
 }

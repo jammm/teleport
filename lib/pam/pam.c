@@ -7,13 +7,6 @@
 #include <dlfcn.h>
 #include <security/pam_appl.h>
 
-// library_name returns the name of the library to load at runtime.
-char *library_name()
-{
-    //return "libpam.so";
-    return "libpam.dylib";
-}
-
 // converse is called by PAM to interact with the user. Interaction means
 // either writing something to stdout and stderr or reading something from
 // stdin.

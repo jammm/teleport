@@ -121,6 +121,9 @@ const (
 	// ComponentSession is an active session.
 	ComponentSession = "session"
 
+	// Component pluggable authentication module (PAM)
+	ComponentPAM = "pam"
+
 	// DebugEnvVar tells tests to use verbose debug output
 	DebugEnvVar = "DEBUG"
 
